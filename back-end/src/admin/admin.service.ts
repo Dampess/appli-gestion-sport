@@ -36,7 +36,7 @@ export class AdminService {
     await this.userRepository.save(user);
 
     // Décrypter l'adresse email
-    const decryptedEmail = this.usersService.decryptField(user.email.data);
+    const decryptedEmail = this.usersService.decryptField(user.email.identifier, user.email.data);
 
     
     await this.mailerService.sendMail({

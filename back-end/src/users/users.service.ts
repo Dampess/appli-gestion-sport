@@ -10,14 +10,11 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { Repository } from 'typeorm';
 import { User } from './users.entity';
 import { ConfigService } from '@nestjs/config';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { promisify } from 'util';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { createCipheriv, randomBytes, scrypt } from 'crypto';
 import * as crypto from 'crypto';
 import { MailerService } from '@nestjs-modules/mailer';
 import { ResetPassword } from './reset-password.entity';
 import { JwtService } from '@nestjs/jwt';
+
 
 @Injectable()
 export class UsersService {
@@ -30,7 +27,6 @@ export class UsersService {
     private readonly configService: ConfigService,
     private readonly mailerService: MailerService,
     private readonly jwtService: JwtService,
-    // private jwtService: JwtService,
   ) {
     this.salt = this.configService.get<string>('SALT');
   }
@@ -78,14 +74,28 @@ export class UsersService {
     return iv.toString('hex') + ':' + encrypted;
   }
 
-  public decryptField(encryptedData: string): string {
+  public decryptField(ivHex: string, encryptedData: string): string {
     const secret = this.configService.get<string>('ENCRYPTION_KEY');
+    if (!secret) {
+      throw new Error('Secret key is not defined in the configuration');
+    }
+    if (ivHex.length > 16) {
+     const [ivString, encryptedString] = encryptedData.split(':');
+     const iv = Buffer.from(ivString, 'hex');
+      const key = crypto.scryptSync(secret, 'salt', 32);
+      console.log(ivString)
+     const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+      let decrypted = decipher.update(encryptedString, 'hex', 'utf-8');
+      console.log('data : ' + encryptedString);
+     decrypted += decipher.final('utf-8');
+     return decrypted;
+    }
     // Extraire l'IV de la chaîne encryptée
-    const [ivString, encryptedString] = encryptedData.split(':');
-    const iv = Buffer.from(ivString, 'hex');
+    const iv = Buffer.from(ivHex, 'hex');
+    console.log(iv.length)
     const key = crypto.scryptSync(secret, 'salt', 32);
     const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-    let decrypted = decipher.update(encryptedString, 'hex', 'utf-8');
+    let decrypted = decipher.update(encryptedData, 'hex', 'utf-8');
     decrypted += decipher.final('utf-8');
     return decrypted;
   }
@@ -95,6 +105,17 @@ export class UsersService {
     const regex =
       /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
     return regex.test(password);
+  }
+
+  splitEncryptedData(encrypted: string) {
+    const [identifier, data] = encrypted.split(':');
+    console.log(data);
+    console.log(identifier);
+    const response = {
+      identifier: identifier,
+      data: data,
+    };
+    return response;
   }
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -126,16 +147,24 @@ export class UsersService {
     const dateSubscribeString = new Date().toString();
 
     // Créer les champs encryptés
-    const encryptedBirthday = this.createEncryptedField(birthdayString);
-    const encryptedDateSubscribe =
-      this.createEncryptedField(dateSubscribeString);
-    const encryptedName = this.createEncryptedField(createUserDto.name);
-    const encryptedFirstName = this.createEncryptedField(
-      createUserDto.firstname,
+    const encryptedBirthday = this.splitEncryptedData(
+      this.createEncryptedField(birthdayString),
+    );
+    const encryptedDateSubscribe = this.splitEncryptedData(
+      this.createEncryptedField(dateSubscribeString),
+    );
+    const encryptedName = this.splitEncryptedData(
+      this.createEncryptedField(createUserDto.name),
+    );
+    const encryptedFirstName = this.splitEncryptedData(
+      this.createEncryptedField(createUserDto.firstname),
     );
 
     // Créer le identifier
     const identifier = this.createidentifier(createUserDto.email);
+    const encryptedEmail = 
+      this.createEncryptedField(createUserDto.email)
+    
 
     // Verifier que mdp correspond à la regex sinon lever erreur
     // if (!this.verifyPasswordRegex(createUserDto.password)) {
@@ -161,27 +190,15 @@ export class UsersService {
     // Créer la nouvelle entité utilisateur
     const newUser = this.userRepository.create({
       gender: createUserDto.gender,
-      firstname: {
-        identifier: encryptedFirstName,
-        data: encryptedFirstName,
-      },
-      name: {
-        identifier: encryptedName,
-        data: encryptedName,
-      },
+      firstname: encryptedFirstName,
+      name: encryptedName,
       password: hashedPassword,
       email: {
         identifier: identifier,
-        data: this.createdata(createUserDto.email),
+        data: encryptedEmail,
       },
-      birthday: {
-        identifier: encryptedBirthday,
-        data: encryptedBirthday,
-      },
-      date_subscribe: {
-        identifier: encryptedDateSubscribe,
-        data: encryptedDateSubscribe,
-      },
+      birthday: encryptedBirthday,
+      date_subscribe: encryptedDateSubscribe,
       role: role,
       isActive: isActive,
     });
@@ -244,8 +261,8 @@ export class UsersService {
     for (const user of users) {
       // Parcourir chaque champ à décrypter
       for (const field of fieldsToDecrypt) {
-        if (user[field] && user[field].data) {
-          const decryptedField = this.decryptField(user[field].data);
+        if (user[field] && user[field]) {
+          const decryptedField = this.decryptField(user[field].identifier, user[field].data);
           user[field] = decryptedField;
         }
       }
@@ -301,8 +318,11 @@ export class UsersService {
     }
 
     for (const field of fieldsToDecrypt) {
-      if (user[field] && user[field].data) {
-        const decryptedField = this.decryptField(user[field].data);
+      if (user[field] && user[field]) {
+        const decryptedField = this.decryptField(
+          user[field].identifier,
+          user[field].data,
+        );
         user[field] = decryptedField;
       }
     }
@@ -486,7 +506,7 @@ export class UsersService {
     console.log(payload);
     const resetToken = await this.jwtService.signAsync(payload);
 
-    const decryptedEmail = this.decryptField(user.email.data);
+    const decryptedEmail = this.decryptField(user.email.identifier,user.email.data);
 
     // Envoyer un email à l'utilisateur avec le lien de réinitialisation
     const resetUrl = `http://localhost:3000/reset-password?token=${resetToken}`;

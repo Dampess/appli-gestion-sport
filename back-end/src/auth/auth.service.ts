@@ -18,9 +18,12 @@ export class AuthService {
     password: string,
   ): Promise<{ access_token: string }> {
     const user = await this.validateUser(email, password);
+    const isActive = user.isActive;
+    if (!isActive) {
+      throw new UnauthorizedException("Votre compte n'est pas actif");
+    }
     const payload = { sub: user.id, email: user.email, role: user.role };
     return { access_token: this.jwtService.sign(payload) };
-    
   }
 
   async validateUser(email: string, password: string): Promise<User> {
@@ -36,4 +39,3 @@ export class AuthService {
     throw new UnauthorizedException('Invalid credentials');
   }
 }
-
